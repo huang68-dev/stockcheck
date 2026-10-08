@@ -2,6 +2,9 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 import pandas as pd
+import csv
+import os
+from datetime import datetime
 
 # 頁面配置
 st.set_page_config(
@@ -11,8 +14,27 @@ st.set_page_config(
 )
 
 # 標題
-st.title("📈 台股即時股價、持股統計與 1-10 年股息推估")
+st.title("📈 台股即時股價查詢與 1-10 年股息推估")
 st.caption("輸入台股代碼檢索最新行情，輸入持股成本即可統計目前淨值與損益，並試算未來 1 至 10 年的含息成本與總資產變化。")
+
+# 後台日誌紀錄功能
+def write_usage_log(symbol: str, shares_cnt: int, cost_val: float):
+    log_file = "usage_log.csv"
+    current_entry = (symbol, shares_cnt, cost_val)
+    
+    # 利用 session_state 防止 Streamlit 重複執行時產生洗版紀錄
+    if st.session_state.get("last_logged_entry") != current_entry:
+        file_exists = os.path.exists(log_file)
+        now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        with open(log_file, "a", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            # 若檔案不存在則寫入欄位標頭
+            if not file_exists:
+                writer.writerow(["查詢時間", "股票代碼", "持有股數", "平均成本(TWD)"])
+            writer.writerow([now_time, symbol, shares_cnt, cost_val])
+            
+        st.session_state["last_logged_entry"] = current_entry
 
 # 1. 股票查詢區塊
 col_input, _ = st.columns([1, 2])
@@ -100,6 +122,9 @@ if stock_id:
         with c2:
             avg_cost = st.number_input("請輸入平均買入成本 (每股 TWD)：", min_value=0.01, value=round(latest_price, 2), step=1.0)
 
+        # 執行後台寫入紀錄
+        write_usage_log(full_symbol, shares, avg_cost)
+
         # 統計計算
         total_cost = shares * avg_cost
         total_market_val = shares * latest_price
@@ -132,8 +157,7 @@ if stock_id:
                 "預估每股年配息金額 (TWD，預設自動抓取近1年累計配息)：",
                 min_value=0.0,
                 value=round(auto_dividend, 2) if auto_dividend > 0 else 0.0,
-                step=0.1,
-                help="預設自動計算過往 365 天配息總和，您亦可手動修改為自訂預估值。"
+                step=0.1
             )
         with div_col2:
             est_yield = (annual_div_per_share / latest_price * 100) if latest_price > 0 else 0.0
@@ -142,12 +166,10 @@ if stock_id:
 
         reinvest_option = st.checkbox("開啟「股息再投資 (DRIP)」推估模式（每年領到的股息以目前股價買回新股）", value=False)
 
-        # 建立 1~10 年推估數據表
         years = list(range(1, 11))
         est_data = []
 
         if not reinvest_option:
-            # 模式 A：現金領回（股數不變，累積現金）
             cum_div = 0.0
             for yr in years:
                 annual_div_total = shares * annual_div_per_share
@@ -168,14 +190,12 @@ if stock_id:
                     "_raw_total_val": total_asset_val
                 })
         else:
-            # 模式 B：股息再投資 (DRIP)
             current_shares = float(shares)
             cum_div_earned = 0.0
             for yr in years:
                 annual_div_total = current_shares * annual_div_per_share
                 cum_div_earned += annual_div_total
                 
-                # 買入新股數 (以目前股價估算)
                 new_shares = annual_div_total / latest_price if latest_price > 0 else 0
                 current_shares += new_shares
                 
@@ -197,12 +217,10 @@ if stock_id:
                 })
 
         df_est = pd.DataFrame(est_data)
-        
-        # 顯示表格 (隱藏繪圖用的內部欄位)
         display_cols = ["年份", "持股數量", "當年預估股息", "累積領取股息", "每股含息成本", "預估總資產淨值(股票+現金)", "預估總報酬率"]
         st.dataframe(df_est[display_cols], use_container_width=True, hide_index=True)
 
-        # 繪製 1-10 年資產總淨值與成本變化折線圖
+        # 1-10 年推估折線圖（固定軸線，防止拖拉放大）
         fig_est = go.Figure()
         fig_est.add_trace(go.Scatter(
             x=[f"第 {y} 年" for y in years],
@@ -220,21 +238,22 @@ if stock_id:
             yaxis='y2'
         ))
 
+        # fixedrange=True 鎖定縮放
         fig_est.update_layout(
             title="1 - 10 年資產總淨值成長與每股含息成本調降趨勢",
-            xaxis_title="年份",
-            yaxis=dict(title="總資產淨值 (TWD)", gridcolor='#334155'),
-            yaxis2=dict(title="每股含息成本 (TWD)", overlaying='y', side='right', gridcolor='#334155'),
+            xaxis=dict(title="年份", fixedrange=True),
+            yaxis=dict(title="總資產淨值 (TWD)", gridcolor='#334155', fixedrange=True),
+            yaxis2=dict(title="每股含息成本 (TWD)", overlaying='y', side='right', gridcolor='#334155', fixedrange=True),
             template="plotly_white",
             height=450,
             margin=dict(l=20, r=20, t=50, b=20),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
-        st.plotly_chart(fig_est, use_container_width=True)
+        st.plotly_chart(fig_est, use_container_width=True, config={'displayModeBar': False})
 
         st.markdown("---")
 
-        # 第四部分：歷史股價 K 線走勢圖
+        # 第四部分：歷史股價 K 線圖（固定軸線，防止拖拉放大）
         st.markdown("### 📊 歷史股價互動 K 線圖")
         time_ranges = {
             "1日 (盤中/高頻)": ("1d", "1m"),
@@ -264,20 +283,20 @@ if stock_id:
                 low=df_chart['Low'],
                 close=df_chart['Close'],
                 name="K線",
-                increasing_line_color='red',   # 台股習慣：上漲為紅
-                decreasing_line_color='green'  # 台股習慣：下跌為綠
+                increasing_line_color='red',
+                decreasing_line_color='green'
             ))
 
+            # fixedrange=True 鎖定縮放，關閉工具列
             fig.update_layout(
                 title=f"{full_symbol} - {selected_range} 股價走勢圖",
-                yaxis_title="股價 (TWD)",
-                xaxis_title="時間",
+                xaxis=dict(gridcolor='#334155', rangeslider=dict(visible=False), fixedrange=True),
+                yaxis=dict(gridcolor='#334155', title='股價 (TWD)', fixedrange=True),
                 template="plotly_white",
-                xaxis_rangeslider_visible=False,
                 height=550,
                 margin=dict(l=20, r=20, t=50, b=20)
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         else:
             st.warning("⚠️ 該時間區間暫無數據可供顯示。")
