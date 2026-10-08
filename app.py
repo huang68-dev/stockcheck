@@ -14,12 +14,12 @@ st.set_page_config(
 st.title("📈 台股即時股價查詢與互動走勢圖")
 st.caption("輸入台股代號，快速查詢最新股價、前一日漲跌幅及 1 日至 1 年的歷史走勢。")
 
-# 側邊欄或頂部輸入框
+# 輸入框
 col_input, _ = st.columns([1, 2])
 with col_input:
     stock_id = st.text_input("請輸入台股代碼（例如：2330、2317、0050、6488）：", value="2330").strip()
 
-# 抓取資料函式（快取 5 分鐘避免頻繁請求）
+# 修正點 1：只回傳可序列化的 full_symbol 與 DataFrame，不傳回 yf.Ticker 物件
 @st.cache_data(ttl=300)
 def get_stock_data(symbol: str):
     """
@@ -28,14 +28,19 @@ def get_stock_data(symbol: str):
     for ext in [".TW", ".TWO"]:
         full_symbol = f"{symbol}{ext}"
         ticker = yf.Ticker(full_symbol)
-        # 嘗試取得 1 年歷史資料驗證是否存在
         df = ticker.history(period="1y")
         if not df.empty:
-            return ticker, full_symbol, df
-    return None, None, None
+            return full_symbol, df
+    return None, None
+
+# 修正點 2：獨立出抓取不同時間區間 K 線資料的快取函式
+@st.cache_data(ttl=300)
+def get_chart_data(full_symbol: str, period: str, interval: str):
+    ticker = yf.Ticker(full_symbol)
+    return ticker.history(period=period, interval=interval)
 
 if stock_id:
-    ticker, full_symbol, df_1y = get_stock_data(stock_id)
+    full_symbol, df_1y = get_stock_data(stock_id)
 
     if df_1y is None or df_1y.empty:
         st.error(f"❌ 找不到股票代碼 「{stock_id}」，請確認輸入是否正確（上市如 2330，上櫃如 6488）。")
@@ -62,7 +67,7 @@ if stock_id:
             label="最新價格",
             value=f"{latest_price:.2f} TWD",
             delta=f"{price_change:+.2f} ({pct_change:+.2f}%)",
-            delta_color="normal" # Streamlit 預設綠升紅降，可自訂台股慣用樣式
+            delta_color="normal"
         )
         m2.metric(label="前一日收盤價", value=f"{prev_price:.2f} TWD")
         m3.metric(label="當日最高 / 最低", value=f"{high_price:.2f} / {low_price:.2f}")
@@ -84,20 +89,19 @@ if stock_id:
         selected_range = st.radio(
             "選擇時間區間：",
             options=list(time_ranges.keys()),
-            index=5, # 預設選 1 年
+            index=5,
             horizontal=True
         )
 
         period, interval = time_ranges[selected_range]
 
-        # 抓取所選區間資料
-        df_chart = ticker.history(period=period, interval=interval)
+        # 取得對應區間的歷史 K 線數據
+        df_chart = get_chart_data(full_symbol, period, interval)
 
         if not df_chart.empty:
-            # 建立 Plotly K 線圖
             fig = go.Figure()
 
-            # K線圖 (Candlestick)
+            # K 線圖 (Candlestick)
             fig.add_trace(go.Candlestick(
                 x=df_chart.index,
                 open=df_chart['Open'],
@@ -109,18 +113,16 @@ if stock_id:
                 decreasing_line_color='green'  # 台股習慣：下跌為綠
             ))
 
-            # 圖表版面配置
             fig.update_layout(
                 title=f"{full_symbol} - {selected_range} 股價走勢圖",
                 yaxis_title="股價 (TWD)",
                 xaxis_title="時間",
                 template="plotly_white",
-                xaxis_rangeslider_visible=False, # 隱藏下方預設縮放條
+                xaxis_rangeslider_visible=False,
                 height=550,
                 margin=dict(l=20, r=20, t=50, b=20)
             )
 
-            # 於網頁顯示互動圖表
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("⚠️ 該時間區間暫無數據可供顯示。")
