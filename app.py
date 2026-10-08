@@ -5,7 +5,7 @@ import pandas as pd
 
 # 頁面配置
 st.set_page_config(
-    page_title="台股即時股價與互動圖表",
+    page_title="CH的台股即時股價與互動圖表",
     page_icon="📈",
     layout="wide"
 )
